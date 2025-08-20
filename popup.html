@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatchMate for Google Ads</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div>
+                <h1 class="title">MatchMate</h1>
+                <p class="tagline">Your Google Ads Keyword Assistant</p>
+            </div>
+            <button class="settings-btn" id="settingsBtn" title="Settings">⚙️</button>
+        </div>
+
+        <!-- Accordion Sections -->
+        <div class="accordion-container">
+            <!-- Import Section -->
+            <details class="section-accordion" open>
+                <summary class="section-header">
+                    <h3>Import Keywords</h3>
+                </summary>
+                <div class="section-content">
+                    <div class="import-controls">
+                        <button class="btn btn-primary" id="pasteBtn">📋 Paste from Clipboard</button>
+                        <button class="btn btn-secondary" id="detectBtn">🔍 Auto-detect from Page</button>
+                    </div>
+                    <textarea 
+                        id="keywordInput" 
+                        placeholder="Paste keywords here or use buttons above..."
+                        rows="4"
+                    ></textarea>
+                </div>
+            </details>
+
+            <!-- Match Type Conversion -->
+            <details class="section-accordion">
+                <summary class="section-header">
+                    <h3>Match Types</h3>
+                </summary>
+                <div class="section-content">
+                    <div class="match-type-controls">
+                        <button class="btn btn-match" id="broadBtn">Broad Match</button>
+                        <button class="btn btn-match" id="phraseBtn">"Phrase Match"</button>
+                        <button class="btn btn-match" id="exactBtn">[Exact Match]</button>
+                    </div>
+                </div>
+            </details>
+
+            <!-- Filter Section -->
+            <details class="section-accordion">
+                <summary class="section-header">
+                    <h3>Filter & Clean</h3>
+                </summary>
+                <div class="section-content">
+                    <div class="filter-controls">
+                        <button class="btn btn-filter" id="removeJunkBtn">🗑️ Remove Junk</button>
+                        <button class="btn btn-filter" id="removeDuplicatesBtn">📝 Remove Duplicates</button>
+                        <button class="btn btn-filter" id="capitalizeBtn">🔠 Capitalize</button>
+                        <input type="text" id="customFilter" placeholder="Custom filter (regex)">
+                    </div>
+                </div>
+            </details>
+
+            <!-- AI Suggestions -->
+            <details class="section-accordion">
+                <summary class="section-header">
+                    <h3>AI Suggestions</h3>
+                </summary>
+                <div class="section-content">
+                    <div class="ai-controls">
+                        <button class="btn btn-ai" id="getSuggestionsBtn">🤖 Get Suggestions</button>
+                        <button class="btn btn-ai" id="expandAdGroupBtn">📈 Expand Ad Group</button>
+                    </div>
+                    <div class="loading" id="aiLoading" style="display: none;">
+                        <div class="spinner"></div>
+                        <span>Getting AI suggestions...</span>
+                    </div>
+                </div>
+            </details>
+
+            <!-- AI Rewriting -->
+            <details class="section-accordion">
+                <summary class="section-header">
+                    <h3>AI Rewriting</h3>
+                </summary>
+                <div class="section-content">
+                    <div class="ai-controls">
+                        <button class="btn btn-ai" id="painPointBtn">🎯 Pain Points</button>
+                        <button class="btn btn-ai" id="cleverBtn">💡 Clever</button>
+                        <button class="btn btn-ai" id="benefitBtn">🌟 Beneficial</button>
+                        <button class="btn btn-ai" id="funnyBtn">😂 Funny</button>
+                    </div>
+                </div>
+            </details>
+        </div>
+
+        <!-- Keywords Display -->
+        <div class="section">
+            <div class="keywords-header">
+                <h3>Keywords (<span id="keywordCount">0</span>)</h3>
+                <button class="btn btn-danger btn-small" id="clearAllBtn">Clear All</button>
+            </div>
+            <div class="keywords-container">
+                <div class="keywords-list" id="keywordsList">
+                    <div class="empty-state">
+                        <p>No keywords yet. Import some keywords to get started!</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Section -->
+        <div class="section">
+            <h3>Export</h3>
+            <div class="export-controls">
+                <button class="btn btn-export" id="copyToClipboardBtn">📋 Copy to Clipboard</button>
+                <button class="btn btn-export" id="downloadCsvBtn">📄 Download CSV</button>
+            </div>
+        </div>
+
+        <!-- Settings Panel (Hidden by default) -->
+        <div class="settings-panel" id="settingsPanel" style="display: none;">
+            <div class="settings-header">
+                <h3>Settings</h3>
+                <button class="close-btn" id="closeSettingsBtn">✕</button>
+            </div>
+            <div class="settings-content">
+                <div class="setting-group">
+                    <label for="fontFamily">Font Family:</label>
+                    <select id="fontFamily">
+                        <option value="Inter">Inter</option>
+                        <option value="Roboto">Roboto</option>
+                        <option value="Arial">Arial</option>
+                        <option value="Helvetica">Helvetica</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label for="fontSize">Font Size:</label>
+                    <select id="fontSize">
+                        <option value="12px">Small (12px)</option>
+                        <option value="14px" selected>Medium (14px)</option>
+                        <option value="16px">Large (16px)</option>
+                        <option value="18px">Extra Large (18px)</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label for="fontColor">Font Color:</label>
+                    <input type="color" id="fontColor" value="#333333">
+                </div>
+                <div class="setting-group">
+                    <label for="apiKey">DeepSeek API Key:</label>
+                    <input type="password" id="apiKey" placeholder="Enter your API key">
+                </div>
+                <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+
+    <!-- AI Suggestions Modal -->
+    <dialog id="aiSuggestionsModal" class="ai-modal">
+        <div class="modal-header">
+            <h3 id="modalTitle">AI Suggestions</h3>
+            <button id="closeModalBtn" class="close-btn">✕</button>
+        </div>
+        <div id="modalContent" class="modal-content">
+            <!-- AI keywords will be populated here -->
+        </div>
+        <div class="modal-footer">
+            <button id="addSelectedBtn" class="btn btn-primary">Add Selected</button>
+            <button id="cancelModalBtn" class="btn">Cancel</button>
+        </div>
+    </dialog>
+</body>
+</html>

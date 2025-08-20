@@ -1,0 +1,63 @@
+{
+  "name": "matchmate-for-google-ads",
+  "version": "1.0.0",
+  "description": "A minimal Chrome extension that helps marketers manage keywords with match type conversion, filtering, and AI-powered suggestions",
+  "main": "popup.js",
+  "scripts": {
+    "build": "echo 'No build process needed for this extension'",
+    "test": "echo 'Tests not implemented yet'",
+    "lint": "echo 'Linting not configured yet'",
+    "package": "zip -r matchmate-extension.zip . -x '*.git*' 'node_modules/*' '*.DS_Store' 'package-lock.json' 'yarn.lock'"
+  },
+  "keywords": [
+    "chrome-extension",
+    "google-ads",
+    "ppc",
+    "keywords",
+    "marketing",
+    "seo",
+    "advertising",
+    "match-types",
+    "ai-suggestions"
+  ],
+  "author": {
+    "name": "Manus Team",
+    "email": "support@manus.ai"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/manus-ai/matchmate-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/manus-ai/matchmate-extension/issues"
+  },
+  "homepage": "https://github.com/manus-ai/matchmate-extension#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {},
+  "dependencies": {},
+  "manifest": {
+    "version": "1.0.0",
+    "manifest_version": 3,
+    "permissions": [
+      "storage",
+      "clipboardWrite",
+      "clipboardRead",
+      "activeTab"
+    ]
+  },
+  "chrome_extension": {
+    "popup": "popup.html",
+    "background": "background.js",
+    "content_scripts": ["content.js"],
+    "icons": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png", 
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}
+

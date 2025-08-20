@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "MatchMate for Google Ads",
+  "version": "1.0.0",
+  "description": "A minimal Chrome extension that helps marketers manage keywords with match type conversion, filtering, and AI-powered suggestions.",
+  "permissions": [
+    "storage",
+    "clipboardWrite",
+    "clipboardRead",
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://ads.google.com/*",
+    "https://adwords.google.com/*",
+    "https://api.deepseek.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "MatchMate for Google Ads",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://ads.google.com/*",
+        "https://adwords.google.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
