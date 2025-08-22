@@ -1,4 +1,78 @@
 // MatchMate for Google Ads - Popup Script
+class TrialManager {
+    constructor() {
+        this.TRIAL_DAYS = 7;
+        this.INSTALLATION_KEY = 'matchmate_install_date';
+        this.TRIAL_EXPIRED_KEY = 'matchmate_trial_expired';
+    }
+
+    getInstallationDate() {
+        return localStorage.getItem(this.INSTALLATION_KEY);
+    }
+
+    setInstallationDate() {
+        const now = new Date().toISOString();
+        localStorage.setItem(this.INSTALLATION_KEY, now);
+        return now;
+    }
+
+    getDaysRemaining() {
+        const installDate = this.getInstallationDate();
+        if (!installDate) {
+            const newInstallDate = this.setInstallationDate();
+            return this.TRIAL_DAYS;
+        }
+
+        const install = new Date(installDate);
+        const now = new Date();
+        const diffTime = Math.abs(now - install);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        
+        return Math.max(0, this.TRIAL_DAYS - diffDays);
+    }
+
+    isTrialExpired() {
+        const daysRemaining = this.getDaysRemaining();
+        return daysRemaining <= 0;
+    }
+
+    showTrialOverlay() {
+        const overlay = document.getElementById('trialOverlay');
+        if (overlay) {
+            overlay.style.display = 'flex';
+        }
+    }
+
+    hideTrialOverlay() {
+        const overlay = document.getElementById('trialOverlay');
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+    }
+
+    showDaysRemaining() {
+        const days = this.getDaysRemaining();
+        if (days <= 3 && days > 0) {
+            let existingBadge = document.getElementById('trialDaysBadge');
+            if (!existingBadge) {
+                const badge = document.createElement('div');
+                badge.id = 'trialDaysBadge';
+                badge.className = `trial-days-remaining ${days <= 1 ? 'danger' : days <= 2 ? 'warning' : ''}`;
+                badge.textContent = `${days} day${days !== 1 ? 's' : ''} left`;
+                document.querySelector('.container').appendChild(badge);
+            } else {
+                existingBadge.textContent = `${days} day${days !== 1 ? 's' : ''} left`;
+                existingBadge.className = `trial-days-remaining ${days <= 1 ? 'danger' : days <= 2 ? 'warning' : ''}`;
+            }
+        }
+    }
+
+    resetTrial() {
+        localStorage.removeItem(this.INSTALLATION_KEY);
+        localStorage.removeItem(this.TRIAL_EXPIRED_KEY);
+    }
+}
+
 class MatchMate {
     constructor() {
         this.keywords = [];
@@ -8,14 +82,22 @@ class MatchMate {
             fontColor: '#333333',
             apiKey: ''
         };
+        this.trialManager = new TrialManager();
         this.init(); 
     }
 
     async init() {
+        // Check trial status first
+        if (this.trialManager.isTrialExpired()) {
+            this.trialManager.showTrialOverlay();
+            return; // Stop initialization if trial expired
+        }
+
         await this.loadSettings();
         this.applySettings();
         this.bindEvents();
         this.loadKeywords();
+        this.trialManager.showDaysRemaining();
     }
 
     // Settings Management
@@ -127,8 +209,14 @@ class MatchMate {
             await chrome.runtime.sendMessage({ action: 'saveKeywords', keywords: this.keywords });
         } catch (error) {
             if (error.message.includes('Receiving end does not exist')) {
-                console.warn('Connection to background script failed. It might be inactive.');
-                this.showNotification('Could not connect to the background script. Please try again.', 'error');
+                console.warn('Background script inactive, falling back to local storage');
+                // Fallback to direct storage access
+                try {
+                    await chrome.storage.local.set({ matchmate_keywords: this.keywords });
+                } catch (storageError) {
+                    console.error('Error saving to storage:', storageError);
+                    this.showNotification('Error saving keywords', 'error');
+                }
             } else {
                 console.error('Error saving keywords:', error);
             }
@@ -238,7 +326,7 @@ class MatchMate {
                     });
                 } catch (error) {
                     if (error.message.includes('Receiving end does not exist')) {
-                        console.warn('Connection to background script failed for broadcast.');
+                        console.warn('Background script inactive, skipping broadcast.');
                     } else {
                         console.error('Error broadcasting keywords:', error);
                     }
@@ -262,16 +350,57 @@ class MatchMate {
                 return;
             }
 
-            // Send message to background script to detect keywords
+            // Try background script first, fallback to direct injection
             let response;
             try {
                 response = await chrome.runtime.sendMessage({ action: 'detectKeywords' });
             } catch (error) {
                 if (error.message.includes('Receiving end does not exist')) {
-                    this.showNotification('Could not connect to the background script. Please try again.', 'error');
-                    return;
+                    console.warn('Background script inactive, attempting direct injection');
+                    // Fallback: directly inject script into page
+                    try {
+                        response = await chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            func: function() {
+                                const keywords = new Set();
+                                const selectors = [
+                                    '[data-test-id="keyword-text"]',
+                                    '.keyword-text',
+                                    '[data-test-id="keyword-idea-text"]',
+                                    '[data-test-id="search-term"]',
+                                    '[data-column="search_term"] span',
+                                    '[role="gridcell"] span',
+                                    'td[data-column="keyword"]',
+                                    'td[data-column="search_term"]',
+                                    '.kw-text'
+                                ];
+                                
+                                selectors.forEach(selector => {
+                                    try {
+                                        const elements = document.querySelectorAll(selector);
+                                        elements.forEach(el => {
+                                            const text = el.textContent?.trim();
+                                            if (text && text.length > 1 && text.length < 200) {
+                                                keywords.add(text);
+                                            }
+                                        });
+                                    } catch (e) {
+                                        console.debug('Selector failed:', selector);
+                                    }
+                                });
+                                
+                                return { success: true, keywords: Array.from(keywords).slice(0, 50) };
+                            }
+                        });
+                        response = response[0].result;
+                    } catch (injectError) {
+                        console.error('Direct injection failed:', injectError);
+                        this.showNotification('Could not detect keywords. Please refresh the page and try again.', 'error');
+                        return;
+                    }
+                } else {
+                    throw error;
                 }
-                throw error; // Re-throw other errors
             }
 
             if (response && response.success && response.keywords && response.keywords.length > 0) {
@@ -619,6 +748,14 @@ class MatchMate {
         this.settings.fontColor = document.getElementById('fontColor').value;
         this.settings.apiKey = document.getElementById('apiKey').value;
         this.saveSettings();
+    }
+
+    // Development utilities
+    resetTrial() {
+        if (confirm('Are you sure you want to reset the trial? This will restart your 7-day trial period.')) {
+            this.trialManager.resetTrial();
+            location.reload();
+        }
     }
 
     setButtonLoading(button, isLoading, loadingText = 'Generating...') {
