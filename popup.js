@@ -100,9 +100,23 @@ class MatchMate {
         this.trialManager.showDaysRemaining();
     }
 
+    // Utility functions for API availability
+    isChromeExtensionAvailable() {
+        return typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+    }
+
     // Settings Management
     async loadSettings() {
         try {
+            if (!this.isChromeExtensionAvailable()) {
+                console.warn('Chrome extension APIs not available, using default settings');
+                // Try to load from localStorage as fallback
+                const saved = localStorage.getItem('matchmate_settings');
+                if (saved) {
+                    this.settings = { ...this.settings, ...JSON.parse(saved) };
+                }
+                return;
+            }
             const result = await chrome.storage.local.get(['matchmate_settings']);
             if (result.matchmate_settings) {
                 this.settings = { ...this.settings, ...result.matchmate_settings };
@@ -114,6 +128,13 @@ class MatchMate {
 
     async saveSettings() {
         try {
+            if (!this.isChromeExtensionAvailable()) {
+                console.warn('Chrome extension APIs not available, saving to localStorage');
+                localStorage.setItem('matchmate_settings', JSON.stringify(this.settings));
+                this.applySettings();
+                this.showNotification('Settings saved to localStorage', 'info');
+                return;
+            }
             await chrome.storage.local.set({ matchmate_settings: this.settings });
             this.applySettings();
             this.showNotification('Settings saved successfully!', 'success');
@@ -142,12 +163,8 @@ class MatchMate {
         document.getElementById('closeSettingsBtn').addEventListener('click', () => this.toggleSettings());
         document.getElementById('saveSettingsBtn').addEventListener('click', () => this.saveSettingsFromForm());
         
-        // Listen for keyword updates from background script
-        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-            if (request.action === 'keywordsUpdated') {
-                this.loadKeywords(); // Refresh keywords from storage
-            }
-        });
+        // Setup improved message listener
+        this.setupMessageListener();
 
         // Import
         document.getElementById('pasteBtn').addEventListener('click', () => this.pasteFromClipboard());
@@ -194,6 +211,15 @@ class MatchMate {
     // Keyword Management
     async loadKeywords() {
         try {
+            if (!this.isChromeExtensionAvailable()) {
+                console.warn('Chrome extension APIs not available, loading from localStorage');
+                const saved = localStorage.getItem('matchmate_keywords');
+                if (saved) {
+                    this.keywords = JSON.parse(saved);
+                    this.updateKeywordDisplay();
+                }
+                return;
+            }
             const result = await chrome.storage.local.get(['matchmate_keywords']);
             if (result.matchmate_keywords) {
                 this.keywords = result.matchmate_keywords;
@@ -206,19 +232,21 @@ class MatchMate {
 
     async saveKeywords() {
         try {
-            await chrome.runtime.sendMessage({ action: 'saveKeywords', keywords: this.keywords });
+            if (!this.isChromeExtensionAvailable()) {
+                console.warn('Chrome extension APIs not available, saving keywords to localStorage');
+                localStorage.setItem('matchmate_keywords', JSON.stringify(this.keywords));
+                return;
+            }
+            // First try with retry mechanism
+            await this.sendMessageWithRetry({ action: 'saveKeywords', keywords: this.keywords });
         } catch (error) {
-            if (error.message.includes('Receiving end does not exist')) {
-                console.warn('Background script inactive, falling back to local storage');
-                // Fallback to direct storage access
-                try {
-                    await chrome.storage.local.set({ matchmate_keywords: this.keywords });
-                } catch (storageError) {
-                    console.error('Error saving to storage:', storageError);
-                    this.showNotification('Error saving keywords', 'error');
-                }
-            } else {
-                console.error('Error saving keywords:', error);
+            console.warn('Background script communication failed, using direct storage:', error.message);
+            // Fallback to direct storage access
+            try {
+                await chrome.storage.local.set({ matchmate_keywords: this.keywords });
+            } catch (storageError) {
+                console.error('Error saving to storage:', storageError);
+                this.showNotification('Error saving keywords', 'error');
             }
         }
     }
@@ -320,16 +348,12 @@ class MatchMate {
 
                 // Broadcast to all Google Ads tabs to highlight these keywords
                 try {
-                    chrome.runtime.sendMessage({ 
+                    await this.sendMessageWithRetry({ 
                         action: 'broadcastHighlight', 
                         keywords: keywords 
                     });
                 } catch (error) {
-                    if (error.message.includes('Receiving end does not exist')) {
-                        console.warn('Background script inactive, skipping broadcast.');
-                    } else {
-                        console.error('Error broadcasting keywords:', error);
-                    }
+                    console.warn('Background script communication failed, skipping broadcast:', error.message);
                 }
 
             } else {
@@ -350,56 +374,52 @@ class MatchMate {
                 return;
             }
 
-            // Try background script first, fallback to direct injection
+            // Try background script first with retry, fallback to direct injection
             let response;
             try {
-                response = await chrome.runtime.sendMessage({ action: 'detectKeywords' });
+                response = await this.sendMessageWithRetry({ action: 'detectKeywords' });
             } catch (error) {
-                if (error.message.includes('Receiving end does not exist')) {
-                    console.warn('Background script inactive, attempting direct injection');
-                    // Fallback: directly inject script into page
-                    try {
-                        response = await chrome.scripting.executeScript({
-                            target: { tabId: tab.id },
-                            func: function() {
-                                const keywords = new Set();
-                                const selectors = [
-                                    '[data-test-id="keyword-text"]',
-                                    '.keyword-text',
-                                    '[data-test-id="keyword-idea-text"]',
-                                    '[data-test-id="search-term"]',
-                                    '[data-column="search_term"] span',
-                                    '[role="gridcell"] span',
-                                    'td[data-column="keyword"]',
-                                    'td[data-column="search_term"]',
-                                    '.kw-text'
-                                ];
-                                
-                                selectors.forEach(selector => {
-                                    try {
-                                        const elements = document.querySelectorAll(selector);
-                                        elements.forEach(el => {
-                                            const text = el.textContent?.trim();
-                                            if (text && text.length > 1 && text.length < 200) {
-                                                keywords.add(text);
-                                            }
-                                        });
-                                    } catch (e) {
-                                        console.debug('Selector failed:', selector);
-                                    }
-                                });
-                                
-                                return { success: true, keywords: Array.from(keywords).slice(0, 50) };
-                            }
-                        });
-                        response = response[0].result;
-                    } catch (injectError) {
-                        console.error('Direct injection failed:', injectError);
-                        this.showNotification('Could not detect keywords. Please refresh the page and try again.', 'error');
-                        return;
-                    }
-                } else {
-                    throw error;
+                console.warn('Background script communication failed, attempting direct injection:', error.message);
+                // Fallback: directly inject script into page
+                try {
+                    response = await chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        func: function() {
+                            const keywords = new Set();
+                            const selectors = [
+                                '[data-test-id="keyword-text"]',
+                                '.keyword-text',
+                                '[data-test-id="keyword-idea-text"]',
+                                '[data-test-id="search-term"]',
+                                '[data-column="search_term"] span',
+                                '[role="gridcell"] span',
+                                'td[data-column="keyword"]',
+                                'td[data-column="search_term"]',
+                                '.kw-text'
+                            ];
+                            
+                            selectors.forEach(selector => {
+                                try {
+                                    const elements = document.querySelectorAll(selector);
+                                    elements.forEach(el => {
+                                        const text = el.textContent?.trim();
+                                        if (text && text.length > 1 && text.length < 200) {
+                                            keywords.add(text);
+                                        }
+                                    });
+                                } catch (e) {
+                                    console.debug('Selector failed:', selector);
+                                }
+                            });
+                            
+                            return { success: true, keywords: Array.from(keywords).slice(0, 2000) };
+                        }
+                    });
+                    response = response[0].result;
+                } catch (injectError) {
+                    console.error('Direct injection failed:', injectError);
+                    this.showNotification('Could not detect keywords. Please refresh the page and try again.', 'error');
+                    return;
                 }
             }
 
@@ -534,13 +554,13 @@ class MatchMate {
         this.setButtonLoading(button, true, 'Rewriting...');
 
         const tonePrompts = {
-            pain_points: `Rewrite the following keywords to focus on customer pain points. Turn them into questions or phrases that a user would search for when they have a problem.`,
-            clever: `Rewrite the following keywords to be more clever and catchy. Use wordplay, metaphors, or unexpected angles.`,
-            beneficial: `Rewrite the following keywords to highlight the key benefits for the customer. Focus on the value and outcomes.`,
-            funny: `Rewrite the following keywords with a humorous or funny twist. Make them memorable and shareable.`
+            pain_points: `Focus on the specific customer pain points and problems behind these keywords. Create natural search queries that directly address the underlying issues, frustrations, or urgent needs.`,
+            clever: `Create clever, attention-grabbing variations that maintain the core commercial intent. Use creative wordplay and memorable phrases relevant to the business context.`,
+            beneficial: `Emphasize the specific benefits and outcomes customers seek. Focus on transformation, solutions, and value propositions using benefit-driven language.`,
+            funny: `Add a light-hearted, memorable twist while maintaining commercial search intent. Create humorous yet relevant variations that people would actually search for.`
         };
 
-        const prompt = `${tonePrompts[tone]} Base keywords: ${this.keywords.join(', ')}. Return only the rewritten keywords, one per line.`;
+        const prompt = `${tonePrompts[tone]} Base keywords: ${this.keywords.join(', ')}. Generate rewritten versions that are highly relevant to each specific keyword's business context and search intent. Return only the rewritten keywords, one per line.`;
 
         try {
             const rewrittenKeywords = await this.callDeepSeekAPI(prompt);
@@ -575,7 +595,14 @@ class MatchMate {
 
         try {
             const suggestions = await this.callDeepSeekAPI(
-                `Generate 10 highly relevant, high-intent keyword suggestions for the following Google Ads keywords: ${this.keywords.slice(0, 5).join(', ')}. Focus on commercial and transactional keywords. Avoid broad or informational queries. Return only the keywords, one per line.`
+                `Generate 10 highly relevant, high-intent keyword suggestions specifically based on these EXACT Google Ads keywords: ${this.keywords.slice(0, 5).join(', ')}. 
+                
+                Requirements:
+                - Each suggestion must directly relate to the search intent and commercial value of the original keywords
+                - Focus on long-tail variations, specific pain points, and purchase-ready queries
+                - Include location-based, price-focused, and comparison terms where relevant
+                - Avoid generic or unrelated suggestions
+                - Return only the keywords, one per line.`
             );
 
             if (suggestions) {
@@ -609,7 +636,15 @@ class MatchMate {
 
         try {
             const expansion = await this.callDeepSeekAPI(
-                `Expand this ad group with 15 high-intent commercial keywords based on these core terms: ${this.keywords.slice(0, 3).join(', ')}. The new keywords should be highly relevant for a paid advertising campaign and indicate strong purchase intent. Return only the keywords, one per line.`
+                `Expand this ad group with 15 high-intent commercial keywords based on these EXACT core terms: ${this.keywords.slice(0, 3).join(', ')}. 
+                
+                Requirements:
+                - Each new keyword must be directly related to the business context and search intent of the original terms
+                - Include specific product variations, service types, and solution-focused queries
+                - Add geographic, pricing, and comparison modifiers where relevant
+                - Focus on keywords that indicate immediate purchase or decision-making intent
+                - Avoid generic or loosely related terms
+                - Return only the keywords, one per line.`
             );
 
             if (expansion) {
@@ -806,6 +841,72 @@ class MatchMate {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    // Enhanced message sending with health check
+    async sendMessageWithRetry(message, maxRetries = 3, delay = 100) {
+        // First check if extension context is valid
+        if (!this.isChromeExtensionAvailable()) {
+            console.warn('Chrome extension APIs not available, skipping message send');
+            return null;
+        }
+        
+        if (!chrome.runtime || !chrome.runtime.sendMessage) {
+            throw new Error('Extension context is invalid');
+        }
+        
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                // First ping the background script to ensure it's ready
+                if (i === 0) {
+                    await chrome.runtime.sendMessage({ action: 'ping' });
+                }
+                
+                return await chrome.runtime.sendMessage(message);
+            } catch (error) {
+                console.log(`Popup communication attempt ${i + 1} failed:`, error.message);
+                
+                if (error.message.includes('Receiving end does not exist') ||
+                    error.message.includes('Extension context invalidated') ||
+                    error.message.includes('Could not establish connection')) {
+                    
+                    if (i === maxRetries - 1) {
+                        this.showNotification('Extension communication failed. Please try again.', 'error');
+                        throw new Error('Background script communication failed after retries');
+                    }
+                    
+                    // Progressive delay for retries
+                    await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+                    continue;
+                } else {
+                    throw error;
+                }
+            }
+        }
+    }
+
+    // Improved message listener with better error handling
+    setupMessageListener() {
+        if (this.messageListenerSetup) return;
+        this.messageListenerSetup = true;
+
+        if (!this.isChromeExtensionAvailable()) {
+            console.warn('Chrome extension APIs not available, skipping message listener setup');
+            return;
+        }
+
+        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+            try {
+                if (request.action === 'keywordsUpdated') {
+                    this.loadKeywords();
+                    sendResponse({ success: true });
+                }
+            } catch (error) {
+                console.error('Error handling message in popup:', error);
+                sendResponse({ success: false, error: error.message });
+            }
+            return true; // Keep message channel open
+        });
+    }
 }
 
 // Initialize the app when DOM is loaded
@@ -826,9 +927,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Listen for updates from background script (e.g., keyword added/removed by content script)
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.action === 'keywordsUpdated') {
-            window.matchMate.loadKeywords(); // Reload keywords to update UI
-        }
-    });
+    if (window.matchMate && window.matchMate.isChromeExtensionAvailable && window.matchMate.isChromeExtensionAvailable()) {
+        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+            if (request.action === 'keywordsUpdated') {
+                window.matchMate.loadKeywords(); // Reload keywords to update UI
+            }
+        });
+    } else {
+        console.warn('Chrome extension APIs not available, skipping global message listener');
+    }
 });

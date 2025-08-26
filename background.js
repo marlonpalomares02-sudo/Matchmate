@@ -1,7 +1,31 @@
 // MatchMate for Google Ads - Background Script (Service Worker)
 
+// Track extension state
+let extensionReady = false;
+
+// Startup handler
+chrome.runtime.onStartup.addListener(() => {
+    console.log('MatchMate extension starting up');
+    initializeExtension();
+});
+
+// Initialize extension state
+async function initializeExtension() {
+    try {
+        // Verify storage access
+        await chrome.storage.local.get(['matchmate_keywords']);
+        extensionReady = true;
+        console.log('MatchMate extension initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize extension:', error);
+        extensionReady = false;
+    }
+}
+
 // Extension installation and update handling
 chrome.runtime.onInstalled.addListener((details) => {
+    console.log('MatchMate extension installed/updated:', details.reason);
+    
     if (details.reason === 'install') {
         console.log('MatchMate extension installed');
         
@@ -14,6 +38,11 @@ chrome.runtime.onInstalled.addListener((details) => {
                 apiKey: ''
             },
             matchmate_keywords: []
+        }).then(() => {
+            console.log('Default settings initialized');
+            initializeExtension();
+        }).catch(error => {
+            console.error('Failed to set default settings:', error);
         });
         
         // Open welcome page or show notification
@@ -27,6 +56,7 @@ chrome.runtime.onInstalled.addListener((details) => {
         
     } else if (details.reason === 'update') {
         console.log('MatchMate extension updated to version', chrome.runtime.getManifest().version);
+        initializeExtension();
     }
 });
 
@@ -36,71 +66,202 @@ chrome.action.onClicked.addListener((tab) => {
     console.log('MatchMate icon clicked on tab:', tab.url);
 });
 
-// Message handling between popup and content scripts
+// Message handling between popup and content scripts with improved error handling
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Background received message:', request);
     
-    switch (request.action) {
-        case 'detectKeywords':
-            handleKeywordDetection(sender.tab.id, sendResponse);
-            return true; // Keep message channel open for async response
-            
-        case 'saveKeywords':
-            handleSaveKeywords(request.keywords, sendResponse);
-            return true;
-            
-        case 'loadKeywords':
-            handleLoadKeywords(sendResponse);
-            return true;
-            
-        case 'exportKeywords':
-            handleExportKeywords(request.keywords, request.format, sendResponse);
-            return true;
-
-        case 'addKeyword':
-            handleAddKeyword(request.keyword, sendResponse);
-            return true;
-
-        case 'removeKeyword':
-            handleRemoveKeyword(request.keyword, sendResponse);
-            return true;
-
-        case 'broadcastHighlight':
-            handleBroadcastHighlight(request.keywords);
-            return false; // No response needed
-            
-        default:
-            console.log('Unknown action:', request.action);
-            sendResponse({ error: 'Unknown action' });
+    // Validate request structure
+    if (!request || !request.action) {
+        console.error('Invalid message received:', request);
+        sendResponse({ success: false, error: 'Invalid message format' });
+        return false;
     }
+    
+    // Health check - respond immediately
+    if (request.action === 'ping') {
+        sendResponse({ success: true, ready: extensionReady });
+        return false;
+    }
+    
+    // Check if extension is ready before processing other requests
+    if (!extensionReady) {
+        console.warn('Extension not ready, initializing...');
+        initializeExtension().then(() => {
+            // Retry the original request
+            handleMessage(request, sender, sendResponse);
+        }).catch(error => {
+            console.error('Failed to initialize extension:', error);
+            sendResponse({ success: false, error: 'Extension initialization failed' });
+        });
+        return true; // Keep message channel open
+    }
+    
+    return handleMessage(request, sender, sendResponse);
 });
 
-// Add keyword handler
-async function handleAddKeyword(keyword, sendResponse) {
+// Separate message handling function
+function handleMessage(request, sender, sendResponse) {
     try {
-        const result = await chrome.storage.local.get(['matchmate_keywords']);
+        switch (request.action) {
+            case 'detectKeywords':
+                handleKeywordDetection(sender.tab?.id, sendResponse);
+                return true; // Keep message channel open for async response
+                
+            case 'saveKeywords':
+                handleSaveKeywords(request.keywords, sendResponse);
+                return true;
+                
+            case 'loadKeywords':
+                handleLoadKeywords(sendResponse);
+                return true;
+                
+            case 'exportKeywords':
+                handleExportKeywords(request.keywords, request.format, sendResponse);
+                return true;
+
+            case 'addKeyword':
+                handleAddKeyword(request.keyword, request.keywordData, request.isNegative, sendResponse);
+                return true;
+
+            case 'removeKeyword':
+                handleRemoveKeyword(request.keyword, sendResponse);
+                return true;
+
+            case 'broadcastHighlight':
+                handleBroadcastHighlight(request.keywords);
+                sendResponse({ success: true });
+                return false;
+                
+            default:
+                console.log('Unknown action:', request.action);
+                sendResponse({ success: false, error: 'Unknown action' });
+                return false;
+        }
+    } catch (error) {
+        console.error('Error processing message:', error);
+        sendResponse({ success: false, error: error.message });
+        return false;
+    }
+}
+
+// Add keyword handler with enhanced data support
+async function handleAddKeyword(keyword, keywordData = null, isNegative = false, sendResponse) {
+    try {
+        const result = await chrome.storage.local.get(['matchmate_keywords', 'matchmate_negative_keywords']);
         const existingKeywords = new Set(result.matchmate_keywords || []);
-        if (!existingKeywords.has(keyword)) {
-            existingKeywords.add(keyword);
-            await chrome.storage.local.set({ matchmate_keywords: Array.from(existingKeywords) });
-            
-            // Notify all extension components to update
-            chrome.runtime.sendMessage({ action: 'keywordsUpdated' });
-            
-            // Also notify content scripts on active tabs
-            const tabs = await chrome.tabs.query({ url: ['https://ads.google.com/*', 'https://adwords.google.com/*'] });
-            tabs.forEach(tab => {
-                chrome.tabs.sendMessage(tab.id, { action: 'keywordsUpdated' }).catch(() => {});
-            });
-            
-            showBadge('+', '#34a853'); // Green for add
-            sendResponse({ success: true });
+        const existingNegativeKeywords = new Set(result.matchmate_negative_keywords || []);
+        
+        // Determine if this should be a negative keyword
+        const shouldBeNegative = isNegative || keyword.startsWith('-');
+        const cleanKeyword = keyword.startsWith('-') ? keyword.substring(1) : keyword;
+        
+        if (shouldBeNegative) {
+            // Handle negative keywords
+            if (!existingNegativeKeywords.has(cleanKeyword)) {
+                existingNegativeKeywords.add(cleanKeyword);
+                await chrome.storage.local.set({ 
+                    matchmate_negative_keywords: Array.from(existingNegativeKeywords)
+                });
+                
+                // Store enhanced data if provided
+                if (keywordData) {
+                    await storeEnhancedKeywordData(cleanKeyword, keywordData, true);
+                }
+                
+                // Notify all extension components to update
+                try {
+                    chrome.runtime.sendMessage({ action: 'keywordsUpdated' }).catch(() => {
+                        // Popup might not be open, this is normal
+                    });
+                } catch (error) {
+                    console.log('Could not notify popup:', error.message);
+                }
+                
+                // Also notify content scripts on active tabs
+                notifyContentScripts();
+                
+                showBadge('[-]', '#ff9800'); // Orange for negative
+                sendResponse({ success: true, type: 'negative' });
+            } else {
+                sendResponse({ success: false, message: 'Negative keyword already exists' });
+            }
         } else {
-            sendResponse({ success: false, message: 'Keyword already exists' });
+            // Handle regular keywords
+            if (!existingKeywords.has(cleanKeyword)) {
+                existingKeywords.add(cleanKeyword);
+                await chrome.storage.local.set({ matchmate_keywords: Array.from(existingKeywords) });
+                
+                // Store enhanced data if provided
+                if (keywordData) {
+                    await storeEnhancedKeywordData(cleanKeyword, keywordData, false);
+                }
+                
+                // Notify all extension components to update
+                try {
+                    chrome.runtime.sendMessage({ action: 'keywordsUpdated' }).catch(() => {
+                        // Popup might not be open, this is normal
+                    });
+                } catch (error) {
+                    console.log('Could not notify popup:', error.message);
+                }
+                
+                // Also notify content scripts on active tabs with better error handling
+                notifyContentScripts();
+                
+                showBadge('+', '#34a853'); // Green for add
+                sendResponse({ success: true, type: 'positive' });
+            } else {
+                sendResponse({ success: false, message: 'Keyword already exists' });
+            }
         }
     } catch (error) {
         console.error('Error adding keyword:', error);
         sendResponse({ success: false, error: error.message });
+    }
+}
+
+// Improved content script notification with better error handling
+async function notifyContentScripts() {
+    try {
+        const tabs = await chrome.tabs.query({ 
+            url: ['https://ads.google.com/*', 'https://adwords.google.com/*']
+        });
+        
+        const notifications = tabs.map(async (tab) => {
+            try {
+                // First ping to check if content script is ready
+                await chrome.tabs.sendMessage(tab.id, { action: 'ping' });
+                // If ping succeeds, send the update
+                await chrome.tabs.sendMessage(tab.id, { action: 'keywordsUpdated' });
+                console.log(`Notified content script on tab ${tab.id}`);
+            } catch (error) {
+                console.log(`Could not notify tab ${tab.id}:`, error.message);
+                // This is normal if content script is not loaded or tab is not on Google Ads
+            }
+        });
+        
+        await Promise.allSettled(notifications);
+    } catch (error) {
+        console.log('Error querying tabs:', error.message);
+    }
+}
+
+// Store enhanced keyword data
+async function storeEnhancedKeywordData(keyword, keywordData, isNegative) {
+    try {
+        const storageKey = `matchmate_enhanced_${isNegative ? 'negative_' : ''}${keyword}`;
+        const enhancedData = {
+            originalText: keywordData.originalText,
+            detectedMatchType: keywordData.detectedMatchType,
+            contextData: keywordData.contextData,
+            source: keywordData.source,
+            timestamp: keywordData.timestamp,
+            isNegative: isNegative
+        };
+        
+        await chrome.storage.local.set({ [storageKey]: enhancedData });
+    } catch (error) {
+        console.error('Error storing enhanced keyword data:', error);
     }
 }
 
@@ -128,8 +289,16 @@ async function handleRemoveKeyword(keyword, sendResponse) {
     }
 }
 
-// Keyword detection handler
+// Keyword detection handler with improved error handling
 async function handleKeywordDetection(tabId, sendResponse) {
+    if (!tabId) {
+        sendResponse({ 
+            success: false, 
+            error: 'No tab ID provided' 
+        });
+        return;
+    }
+    
     try {
         const results = await chrome.scripting.executeScript({
             target: { tabId: tabId },
@@ -151,7 +320,7 @@ async function handleKeywordDetection(tabId, sendResponse) {
         console.error('Error detecting keywords:', error);
         sendResponse({ 
             success: false, 
-            error: error.message 
+            error: error.message || 'Unknown error during keyword detection'
         });
     }
 }
@@ -187,7 +356,7 @@ function extractKeywordsFromPage() {
         }
     });
     
-    return Array.from(keywords).slice(0, 50);
+    return Array.from(keywords).slice(0, 2000);
 }
 
 // Save keywords handler
@@ -269,7 +438,7 @@ async function handleExportKeywords(keywords, format, sendResponse) {
     }
 }
 
-// Context Menu Setup
+// Context Menu Setup with enhanced options
 chrome.runtime.onInstalled.addListener(() => {
     // Create a parent menu item
     chrome.contextMenus.create({
@@ -300,42 +469,157 @@ chrome.runtime.onInstalled.addListener(() => {
         title: 'Add as [Exact Match]',
         contexts: ['selection']
     });
+
+    // Add separator
+    chrome.contextMenus.create({
+        id: 'separator1',
+        parentId: 'matchmate-parent',
+        type: 'separator',
+        contexts: ['selection']
+    });
+
+    // Add negative keyword options
+    chrome.contextMenus.create({
+        id: 'add-negative-broad',
+        parentId: 'matchmate-parent',
+        title: "Add as Negative Broad",
+        contexts: ['selection']
+    });
+
+    chrome.contextMenus.create({
+        id: 'add-negative-phrase',
+        parentId: 'matchmate-parent',
+        title: 'Add as Negative "Phrase"',
+        contexts: ['selection']
+    });
+
+    chrome.contextMenus.create({
+        id: 'add-negative-exact',
+        parentId: 'matchmate-parent',
+        title: 'Add as Negative [Exact]',
+        contexts: ['selection']
+    });
+
+    // Add separator
+    chrome.contextMenus.create({
+        id: 'separator2',
+        parentId: 'matchmate-parent',
+        type: 'separator',
+        contexts: ['selection']
+    });
+
+    // Add bulk actions
+    chrome.contextMenus.create({
+        id: 'add-with-related',
+        parentId: 'matchmate-parent',
+        title: "Add with Related Keywords",
+        contexts: ['selection']
+    });
 });
 
-// Context Menu Click Handler
+// Context Menu Click Handler with enhanced functionality
 chrome.contextMenus.onClicked.addListener((info, tab) => {
     const selection = info.selectionText?.trim();
     if (!selection) return;
 
     let keyword = selection;
+    let isNegative = false;
+    let keywordData = {
+        originalText: selection,
+        source: 'context_menu',
+        timestamp: Date.now(),
+        contextData: {}
+    };
 
     // Format keyword based on which menu item was clicked
     switch (info.menuItemId) {
         case 'add-phrase':
             keyword = `"${selection}"`;
+            keywordData.detectedMatchType = 'phrase';
             break;
         case 'add-exact':
             keyword = `[${selection}]`;
+            keywordData.detectedMatchType = 'exact';
             break;
-        // 'add-broad' is the default
+        case 'add-negative-broad':
+            keyword = selection;
+            isNegative = true;
+            keywordData.detectedMatchType = 'broad';
+            break;
+        case 'add-negative-phrase':
+            keyword = `"${selection}"`;
+            isNegative = true;
+            keywordData.detectedMatchType = 'phrase';
+            break;
+        case 'add-negative-exact':
+            keyword = `[${selection}]`;
+            isNegative = true;
+            keywordData.detectedMatchType = 'exact';
+            break;
+        case 'add-with-related':
+            keyword = selection;
+            keywordData.includeRelated = true;
+            break;
+        default: // 'add-broad'
+            keyword = selection;
+            keywordData.detectedMatchType = 'broad';
     }
 
-    // Add the keyword using the existing handler
-    handleAddKeyword(keyword, (response) => {
+    // Add the keyword using the enhanced handler
+    handleAddKeyword(keyword, keywordData, isNegative, (response) => {
         if (response && response.success) {
-            console.log(`Keyword "${keyword}" added via context menu.`);
+            const type = response.type || 'positive';
+            console.log(`Keyword "${keyword}" added as ${type} via context menu.`);
+            
             // Highlight the keyword on the current page after adding
             chrome.tabs.sendMessage(tab.id, {
                 action: 'highlightKeyword',
                 keyword: selection, // Highlight the base keyword
                 highlight: true
+            }).catch(() => {
+                // Content script might not be ready, ignore error
             });
+            
+            // Show appropriate badge
+            const badgeText = isNegative ? '[-]' : '[+]';
+            const badgeColor = isNegative ? '#ff9800' : '#34a853';
+            showBadge(badgeText, badgeColor);
+        } else {
+            console.warn('Failed to add keyword via context menu:', response?.message || 'Unknown error');
         }
     });
+
+    // Handle "add with related" functionality
+    if (info.menuItemId === 'add-with-related') {
+        // Request related keywords from content script
+        chrome.tabs.sendMessage(tab.id, {
+            action: 'getRelatedKeywords',
+            keyword: selection
+        }).then(response => {
+            if (response && response.relatedKeywords) {
+                response.relatedKeywords.slice(0, 3).forEach(relatedKeyword => {
+                    const relatedData = {
+                        originalText: relatedKeyword,
+                        source: 'related_context_menu',
+                        timestamp: Date.now(),
+                        detectedMatchType: 'broad'
+                    };
+                    handleAddKeyword(relatedKeyword, relatedData, false, () => {});
+                });
+            }
+        }).catch(() => {
+            // Content script might not support this feature yet
+        });
+    }
 });
 
-// Broadcast a message to all Google Ads tabs
+// Broadcast a message to all Google Ads tabs with error handling
 async function handleBroadcastHighlight(keywords) {
+    if (!keywords || !Array.isArray(keywords)) {
+        console.error('Invalid keywords for broadcast:', keywords);
+        return;
+    }
+    
     try {
         const tabs = await chrome.tabs.query({
             url: [
@@ -344,12 +628,25 @@ async function handleBroadcastHighlight(keywords) {
             ]
         });
 
-        tabs.forEach(tab => {
-            chrome.tabs.sendMessage(tab.id, { 
-                action: 'highlightKeywords', 
-                keywords: keywords 
-            });
+        if (tabs.length === 0) {
+            console.log('No Google Ads tabs found for broadcast');
+            return;
+        }
+
+        // Send messages to all tabs with error handling for each
+        const promises = tabs.map(async (tab) => {
+            try {
+                await chrome.tabs.sendMessage(tab.id, { 
+                    action: 'highlightKeywords', 
+                    keywords: keywords 
+                });
+            } catch (error) {
+                console.warn(`Failed to send message to tab ${tab.id}:`, error.message);
+            }
         });
+        
+        await Promise.allSettled(promises);
+        console.log(`Broadcast highlight message sent to ${tabs.length} tabs`);
     } catch (error) {
         console.error('Error broadcasting highlight message:', error);
     }
@@ -399,20 +696,31 @@ async function cleanupOldData() {
     }
 }
 
-// Set up periodic cleanup (once a week)
+// Set up periodic cleanup (once a week) and initialize extension
 chrome.runtime.onStartup.addListener(() => {
+    console.log('MatchMate background script startup');
+    initializeExtension();
     chrome.alarms.create('cleanup-storage', { 
         delayInMinutes: 1, 
         periodInMinutes: 7 * 24 * 60 // Weekly
     });
 });
 
-// Error handling
+// Error handling and health check
 chrome.runtime.onSuspend.addListener(() => {
     console.log('MatchMate background script suspending');
+    extensionReady = false;
 });
+
+// Health check function
+function isExtensionReady() {
+    return extensionReady;
+}
 
 // Debug logging
 if (chrome.runtime.getManifest().version.includes('dev')) {
     console.log('MatchMate background script loaded in development mode');
 }
+
+// Initialize on script load
+initializeExtension();
